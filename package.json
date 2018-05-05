@@ -1,0 +1,22 @@
+{
+  "name": "@fantasyarcade/ready-fs",
+  "version": "1.0.0",
+  "description": "Disk filesystem for [READY](https://fantasyarca.de/ready/).",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fantasyarcade/ready-fs.git"
+  },
+  "author": "Jason Frame <jwf@jasonframe.co.uk>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/fantasyarcade/ready-fs/issues"
+  },
+  "homepage": "https://github.com/fantasyarcade/ready-fs#readme",
+  "devDependencies": {
+    "@fantasyarcade/ready-memory-disk": "^1.0.0"
+  }
+}
