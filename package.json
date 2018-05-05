@@ -17,6 +17,6 @@
   },
   "homepage": "https://github.com/fantasyarcade/ready-fs#readme",
   "devDependencies": {
-    "@fantasyarcade/ready-memory-disk": "^1.0.0"
+    "@fantasyarcade/ready-memory-disk": "^1.1.1"
   }
 }
