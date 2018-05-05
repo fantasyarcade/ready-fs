@@ -5,7 +5,7 @@ Disk filesystem for [READY](https://fantasyarca.de/ready/).
 # Overview
 
 File system has:
-
+  
   - Free list (bitmap)
   - Root directory
 
@@ -15,7 +15,7 @@ Each 16 bit pointer is a pointer to a data block; zero is a sentinel value. If t
 
 # Directory Format
 
-Each directory entry is 32 bytes.
+Each directory entry is 32 bytes. Filenames do not have extensions, instead there's a dedicated type field to specify a file's type.
 
 ```
 Field                   Offset      Length      Notes
