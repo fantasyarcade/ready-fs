@@ -21,8 +21,8 @@ const Types = {
 
 exports.create = function(disk) {
     // TODO: set filesystem version on disk (need a method disk to do this)
-    const endBlock = FreeList.writeInitial(disk, 1); // create initial freelist
-    disk.writeBlock(endBlock, new Uint8Array(disk.blockSize)); // zero-out root directory
+    const rootDirBlock = FreeList.writeInitial(disk, 1); // create initial freelist
+    disk.writeBlock(rootDirBlock, new Uint8Array(disk.blockSize)); // zero-out root directory
     return new FileSystem(disk);
 }
 

@@ -8,8 +8,11 @@ function createFS(blockSize, blockCount) {
 
 const fs = createFS(256, 512);
 
-for (let i = 0; i < 16; ++i) {
-    console.log(fs.create("/foo" + i, 1));  
-}
+// console.log(fs._disk.readBlock(1));
 
-console.log(fs.list('/'));
+// for (let i = 0; i < 16; ++i) {
+//     console.log(fs.create("/foo" + i, 1));  
+// }
+
+
+// console.log(fs.list('/'));
