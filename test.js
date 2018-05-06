@@ -26,6 +26,9 @@ console.log(fs.list("/moose/slashdot"));
 fs.create("/moose/slashdot/toodle", 1);
 fs.create("/moose/slashdot/pip", 1);
 
+fs.delete("/moose/slashdot/toodle");
+fs.delete("/moose/slashdot/pip");
+
 console.log(fs.list("/moose/slashdot"));
 
 // console.log(fs._disk.readBlock(1));

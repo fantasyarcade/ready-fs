@@ -68,6 +68,43 @@ class FileSystem {
         return true;
     }
 
+    delete(path) {
+        const dirBlock = this._findBlockForDirectory(dirname(path));
+        if (dirBlock < 0) {
+            // TODO: set error
+            return false;
+        }
+
+        const victim = basename(path);
+        let state = 0;
+
+        this._walkDirectoryEntries(dirBlock, false, (b, d, o) => {
+            if (readFilename(d, o) === victim) {
+                if (readType(d, o) === Types.Directory) {
+                    state = 1;
+                } else {
+                    this._purgeInode(readDataPointer(d, o));
+                    // TODO: zap metadata, when we have metadata
+                    clearDirectoryEntry(d, o);
+                    this._disk.writeBlock(b, d);
+                    state = 2;
+                }
+                return false;
+            }
+        });
+
+        switch (state) {
+            case 0: // not found
+                // TODO: set error
+                return false;
+            case 1: // directory
+                // TODO: set error
+                return false;
+            case 2:
+                return true;
+        }
+    }
+
     mkdir(path) {
         const newDirBlock = this._freelist.alloc();
         if (newDirBlock < 0) {
@@ -88,6 +125,10 @@ class FileSystem {
         this._disk.writeBlock(block, data);
 
         return true;
+    }
+
+    rmdir(path) {
+
     }
 
     _prepareNewDirectoryEntry(path, type) {
@@ -191,13 +232,36 @@ class FileSystem {
         writeUint16BE(data, offset + 30, 0);
         return data;
     }
+
+    _purgeInode(block) {
+        const end = this._disk.blockSize - 2;
+        while (block) {
+            const blockData = this._disk.readBlock(block);
+            let i;
+            for (i = 0; i < end; i += 2) {
+                const b = readUint16BE(blockData, i);
+                if (b !== 0) {
+                    this._freelist.free(b);
+                }
+            }
+            block = readUint16BE(blockData, i);
+        }
+    }
 }
 
 function readFilename(data, offset) { return readFixedLengthAsciiString(data, offset, 16); }
 function readType(data, offset) { return readUint16BE(data, offset + 16); }
 function readDataPointer(data, offset) { return readUint16BE(data, offset + 18); }
+function readMetadataPointer(data, offset) { return readUint16BE(data, offset + 20); }
 
 function writeDataPointer(data, offset, value) { writeUint16BE(data, offset + 18, value); }
+
+function clearDirectoryEntry(data, offset) {
+    const end = offset + 32;
+    while (offset < end) {
+        data[offset++] = 0;
+    }
+}
 
 function parseDirectoryEntry(data, offset) {
     return {
