@@ -57,6 +57,40 @@ class FileSystem {
             return false;
         }
 
+        const res = this._prepareNewDirectoryEntry(path, type);
+        if (res === false) {
+            return false;
+        }
+
+        const [block, offset, data] = res;
+        this._disk.writeBlock(block, data);
+
+        return true;
+    }
+
+    mkdir(path) {
+        const newDirBlock = this._freelist.alloc();
+        if (newDirBlock < 0) {
+            // TODO: set error
+            return false;
+        }
+
+        const res = this._prepareNewDirectoryEntry(path, Types.Directory);
+        if (res === false) {
+            this._freelist.free(newDirBlock);
+            return false;
+        }
+
+        this._disk.zeroBlock(newDirBlock);
+
+        const [block, offset, data] = res;
+        writeDataPointer(data, offset, newDirBlock);
+        this._disk.writeBlock(block, data);
+
+        return true;
+    }
+
+    _prepareNewDirectoryEntry(path, type) {
         let dirBlock = this._findBlockForDirectory(dirname(path));
         if (dirBlock === -1) {
             // TODO: set error
@@ -92,9 +126,14 @@ class FileSystem {
             return false;
         }
 
-        this._createEmptyFileInDirectory(freeBlock, freeOffset, basename(path), type);
+        const blockData = this._createEmptyFileInDirectory(
+            freeBlock,
+            freeOffset,
+            basename(path),
+            type
+        );
 
-        return true;
+        return [freeBlock, freeOffset, blockData];
     }
 
     _findBlockForDirectory(path) {
@@ -150,13 +189,15 @@ class FileSystem {
         writeUint32BE(data, offset + 22, Math.floor(Date.now() / 1000));
         writeUint32BE(data, offset + 26, 0);
         writeUint16BE(data, offset + 30, 0);
-        this._disk.writeBlock(block, data);
+        return data;
     }
 }
 
 function readFilename(data, offset) { return readFixedLengthAsciiString(data, offset, 16); }
 function readType(data, offset) { return readUint16BE(data, offset + 16); }
 function readDataPointer(data, offset) { return readUint16BE(data, offset + 18); }
+
+function writeDataPointer(data, offset, value) { writeUint16BE(data, offset + 18, value); }
 
 function parseDirectoryEntry(data, offset) {
     return {
