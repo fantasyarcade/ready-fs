@@ -68,6 +68,28 @@ class FileSystem {
         return true;
     }
 
+    mkdir(path) {
+        const newDirBlock = this._freelist.alloc();
+        if (newDirBlock < 0) {
+            // TODO: set error
+            return false;
+        }
+
+        const res = this._prepareNewDirectoryEntry(path, Types.Directory);
+        if (res === false) {
+            this._freelist.free(newDirBlock);
+            return false;
+        }
+
+        this._disk.zeroBlock(newDirBlock);
+
+        const [block, offset, data] = res;
+        writeDataPointer(data, offset, newDirBlock);
+        this._disk.writeBlock(block, data);
+
+        return true;
+    }
+
     delete(path) {
         const dirBlock = this._findBlockForDirectory(dirname(path));
         if (dirBlock < 0) {
@@ -105,39 +127,25 @@ class FileSystem {
         }
     }
 
-    mkdir(path) {
-        const newDirBlock = this._freelist.alloc();
-        if (newDirBlock < 0) {
-            // TODO: set error
-            return false;
-        }
-
-        const res = this._prepareNewDirectoryEntry(path, Types.Directory);
-        if (res === false) {
-            this._freelist.free(newDirBlock);
-            return false;
-        }
-
-        this._disk.zeroBlock(newDirBlock);
-
-        const [block, offset, data] = res;
-        writeDataPointer(data, offset, newDirBlock);
-        this._disk.writeBlock(block, data);
-
-        return true;
-    }
-
     rmdir(path) {
-        const parentInfo = {};
-        const dirBlock = this._findBlockForDirectory(path, parentInfo);
-        if (dirBlock < 0) {
+        const entry = this._findDirectoryEntryForPath(path);
+        if (!entry) {
             // TODO: set error
             return false;
         }
+
+        const [block, data, offset] = entry;
+
+        if (!isDirectory(data, offset)) {
+            // TODO: set error
+            return false;
+        }
+
+        const directoryEntriesBlock = readDataPointer(data, offset);
 
         // Check directory empty
         let empty = true;
-        this._walkDirectoryEntries(dirBlock, false, (b, d, o) => {
+        this._walkDirectoryEntries(directoryEntriesBlock, false, (b, d, o) => {
             empty = false;
             return false;
         });
@@ -148,7 +156,7 @@ class FileSystem {
         }
 
         // Reclaim all directory blocks
-        let victimBlock = dirBlock;
+        let victimBlock = directoryEntriesBlock;
         while (victimBlock) {
             const vbd = this._disk.readBlock(victimBlock);
             this._freelist.free(victimBlock);
@@ -156,9 +164,33 @@ class FileSystem {
         }
 
         // Remove directory entry
-        const parentBlock = this._disk.readBlock(parentInfo.block);
-        clearDirectoryEntry(parentBlock, parentInfo.offset);
-        this._disk.writeBlock(parentInfo.block, parentBlock);
+        clearDirectoryEntry(data, offset);
+        this._disk.writeBlock(block, data);
+
+        return true;
+    }
+
+    setType(path, newType) {
+        if (newType === Types.Directory) {
+            // TODO: set error
+            return false;
+        }
+
+        const entry = this._findDirectoryEntryForPath(path);
+        if (!entry) {
+            // TODO: set error
+            return false;
+        }
+
+        const [block, data, offset] = entry;
+        
+        if (readType(data, offset) === Types.Directory) {
+            // TODO: set error
+            return false;
+        }
+
+        writeType(data, offset, newType);
+        this._disk.writeBlock(block, data);
 
         return true;
     }
@@ -209,36 +241,52 @@ class FileSystem {
         return [freeBlock, freeOffset, blockData];
     }
 
-    _findBlockForDirectory(path, parentInfo) {
-        let block = this._rootDirectoryOffset;
-        if (parentInfo) {
-            parentInfo.startBlock = null;
-            parentInfo.block = null;
-            parentInfo.offset = null;
+    _findBlockForDirectory(path) {
+        if (path === '/') {
+            return this._rootDirectoryOffset;
         }
+
+        const res = this._findDirectoryEntryForPath(path);
+        if (!res) {
+            return -1;
+        } else {
+            const [block, data, offset] = res;
+            if (!isDirectory(data, offset)) {
+                return -1;
+            } else {
+                return readDataPointer(data, offset);
+            }
+        }
+    }
+
+    _findDirectoryEntryForPath(path) {
+        let searchBlock = this._rootDirectoryOffset;
+        let retVal = null;
         const components = path.replace(/\/+$/, '').split(/\/+/);
-        for (let i = 1; i < components.length; ++i) {
+        for (let i = 1; ; ++i) {
             let nextBlock = -1;
-            this._walkDirectoryEntries(block, false, (b, d, o) => {
+            this._walkDirectoryEntries(searchBlock, false, (b, d, o) => {
                 if (readFilename(d, o) === components[i]) {
-                    if (readType(d, o) === Types.Directory) {
+                    if (i === components.length - 1) {
+                        retVal = [b, d, o];
+                    } else if (readType(d, o) !== Types.Directory) {
+                        retVal = false;
+                    } else {
                         nextBlock = readDataPointer(d, o);
-                        if (parentInfo) {
-                            parentInfo.startBlock = block;
-                            parentInfo.block = b;
-                            parentInfo.offset = o;
-                        }
                     }
                     return false;
                 }
             });
-            if (nextBlock < 0) {
-                return -1;
+            if (retVal !== null) {
+                break;
+            } else if (nextBlock < 0) {
+                retVal = false;
+                break;
             } else {
-                block = nextBlock;
+                searchBlock = nextBlock;
             }
         }
-        return block;
+        return retVal;
     }
 
     _walkDirectoryEntries(block, includeBlank, cb) {
@@ -291,11 +339,14 @@ class FileSystem {
     }
 }
 
+function isDirectory(data, offset) { return readType(data, offset) === Types.Directory; }
+
 function readFilename(data, offset) { return readFixedLengthAsciiString(data, offset, 16); }
 function readType(data, offset) { return readUint16BE(data, offset + 16); }
 function readDataPointer(data, offset) { return readUint16BE(data, offset + 18); }
 function readMetadataPointer(data, offset) { return readUint16BE(data, offset + 20); }
 
+function writeType(data, offset, value) { writeUint16BE(data, offset + 16, value); }
 function writeDataPointer(data, offset, value) { writeUint16BE(data, offset + 18, value); }
 
 function clearDirectoryEntry(data, offset) {
