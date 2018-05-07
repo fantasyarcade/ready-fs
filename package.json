@@ -18,5 +18,8 @@
   "homepage": "https://github.com/fantasyarcade/ready-fs#readme",
   "devDependencies": {
     "@fantasyarcade/ready-memory-disk": "^1.1.3"
+  },
+  "dependencies": {
+    "@fantasyarcade/ready-fs-types": "0.0.1"
   }
 }

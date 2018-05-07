@@ -14,10 +14,7 @@ const {
 
 const FreeList = require('./private/free-list');
 
-// TODO: extract this to a module
-const Types = {
-    Directory: 0x0000
-}
+const { Types } = require('@fantasyarcade/ready-fs-types');
 
 exports.create = function(disk) {
     // TODO: set filesystem version on disk (need a method disk to do this)
