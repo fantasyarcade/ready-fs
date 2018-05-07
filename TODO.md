@@ -2,10 +2,10 @@
 
   - [x] free list - initial write
   - [x] free list - proper implementation
-  - [ ] update directory size on create file
   - [x] create directory
   - [x] delete file
   - [x] delete directory
+  - [ ] update directory size on create/remove file
   - [ ] change file type
   - [ ] rename/move file
   - [ ] open file
