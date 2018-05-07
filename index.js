@@ -128,7 +128,39 @@ class FileSystem {
     }
 
     rmdir(path) {
+        const parentInfo = {};
+        const dirBlock = this._findBlockForDirectory(path, parentInfo);
+        if (dirBlock < 0) {
+            // TODO: set error
+            return false;
+        }
 
+        // Check directory empty
+        let empty = true;
+        this._walkDirectoryEntries(dirBlock, false, (b, d, o) => {
+            empty = false;
+            return false;
+        });
+
+        if (!empty) {
+            // TODO: set error
+            return false;
+        }
+
+        // Reclaim all directory blocks
+        let victimBlock = dirBlock;
+        while (victimBlock) {
+            const vbd = this._disk.readBlock(victimBlock);
+            this._freelist.free(victimBlock);
+            victimBlock = readUint16BE(vbd[this._disk.blockSize - 32]);
+        }
+
+        // Remove directory entry
+        const parentBlock = this._disk.readBlock(parentInfo.block);
+        clearDirectoryEntry(parentBlock, parentInfo.offset);
+        this._disk.writeBlock(parentInfo.block, parentBlock);
+
+        return true;
     }
 
     _prepareNewDirectoryEntry(path, type) {
@@ -177,8 +209,13 @@ class FileSystem {
         return [freeBlock, freeOffset, blockData];
     }
 
-    _findBlockForDirectory(path) {
+    _findBlockForDirectory(path, parentInfo) {
         let block = this._rootDirectoryOffset;
+        if (parentInfo) {
+            parentInfo.startBlock = null;
+            parentInfo.block = null;
+            parentInfo.offset = null;
+        }
         const components = path.replace(/\/+$/, '').split(/\/+/);
         for (let i = 1; i < components.length; ++i) {
             let nextBlock = -1;
@@ -186,6 +223,11 @@ class FileSystem {
                 if (readFilename(d, o) === components[i]) {
                     if (readType(d, o) === Types.Directory) {
                         nextBlock = readDataPointer(d, o);
+                        if (parentInfo) {
+                            parentInfo.startBlock = block;
+                            parentInfo.block = b;
+                            parentInfo.offset = o;
+                        }
                     }
                     return false;
                 }

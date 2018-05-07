@@ -29,7 +29,16 @@ fs.create("/moose/slashdot/pip", 1);
 fs.delete("/moose/slashdot/toodle");
 fs.delete("/moose/slashdot/pip");
 
-console.log(fs.list("/moose/slashdot"));
+// console.log(fs.list("/moose/slashdot"));
+
+console.log("\n\nBefore:\n");
+console.log(fs.list("/moose"));
+
+fs.rmdir("/moose/slashdot");
+fs.mkdir("/moose/zoobeedoo");
+
+console.log("\n\nAfter:\n");
+console.log(fs.list("/moose"));
 
 // console.log(fs._disk.readBlock(1));
 
