@@ -35,7 +35,7 @@ class FileSystem {
     constructor(disk) {
         this._disk = disk;
         this._freelist = new FreeList(disk, 1);
-        this._rootDirectoryOffset = this._freelist.blockOffset + this._freelist.blockLength;
+        this._rootDirectoryBlock = this._freelist.blockOffset + this._freelist.blockLength;
     }
 
     list(directory) {
@@ -317,7 +317,7 @@ class FileSystem {
 
     _findBlockForDirectory(path) {
         if (path === '/') {
-            return this._rootDirectoryOffset;
+            return this._rootDirectoryBlock;
         }
 
         const res = this._findDirectoryEntryForPath(path);
@@ -334,7 +334,7 @@ class FileSystem {
     }
 
     _findDirectoryEntryForPath(path) {
-        let searchBlock = this._rootDirectoryOffset;
+        let searchBlock = this._rootDirectoryBlock;
         let retVal = null;
         const components = path.replace(/\/+$/, '').split(/\/+/);
         for (let i = 1; ; ++i) {
