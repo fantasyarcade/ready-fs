@@ -5,7 +5,7 @@
   - [x] create directory
   - [x] delete file
   - [x] delete directory
-  - [ ] update directory size on create/remove file
+  - [x] update directory size on create/remove file/directory
   - [x] change file type
   - [ ] rename/move file
   - [ ] open file

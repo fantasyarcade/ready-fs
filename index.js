@@ -57,13 +57,9 @@ class FileSystem {
             return false;
         }
 
-        const res = this._prepareNewDirectoryEntry(path, type);
-        if (res === false) {
+        if (!this._insertNewDirectoryEntry(path, type, 0)) {
             return false;
         }
-
-        const [block, offset, data] = res;
-        this._disk.writeBlock(block, data);
 
         return true;
     }
@@ -75,97 +71,47 @@ class FileSystem {
             return false;
         }
 
-        const res = this._prepareNewDirectoryEntry(path, Types.Directory);
-        if (res === false) {
+        this._disk.zeroBlock(newDirBlock);
+
+        if (!this._insertNewDirectoryEntry(path, Types.Directory, newDirBlock)) {
             this._freelist.free(newDirBlock);
             return false;
         }
-
-        this._disk.zeroBlock(newDirBlock);
-
-        const [block, offset, data] = res;
-        writeDataPointer(data, offset, newDirBlock);
-        this._disk.writeBlock(block, data);
 
         return true;
     }
 
     delete(path) {
-        const dirBlock = this._findBlockForDirectory(dirname(path));
-        if (dirBlock < 0) {
+        const res = this._removeDirectoryEntry(path, false);
+        if (!res) {
             // TODO: set error
             return false;
         }
 
-        const victim = basename(path);
-        let state = 0;
+        const [dataPointer, metadataPointer] = res;
 
-        this._walkDirectoryEntries(dirBlock, false, (b, d, o) => {
-            if (readFilename(d, o) === victim) {
-                if (readType(d, o) === Types.Directory) {
-                    state = 1;
-                } else {
-                    this._purgeInode(readDataPointer(d, o));
-                    // TODO: zap metadata, when we have metadata
-                    clearDirectoryEntry(d, o);
-                    this._disk.writeBlock(b, d);
-                    state = 2;
-                }
-                return false;
-            }
-        });
+        // TODO: purge inode if file is not open
+        // this._purgeInode(dataPointer);
 
-        switch (state) {
-            case 0: // not found
-                // TODO: set error
-                return false;
-            case 1: // directory
-                // TODO: set error
-                return false;
-            case 2:
-                return true;
-        }
+        return true;
     }
 
     rmdir(path) {
-        const entry = this._findDirectoryEntryForPath(path);
-        if (!entry) {
+        const res = this._removeDirectoryEntry(path, true);
+        if (!res) {
             // TODO: set error
             return false;
         }
 
-        const [block, data, offset] = entry;
-
-        if (!isDirectory(data, offset)) {
-            // TODO: set error
-            return false;
-        }
-
-        const directoryEntriesBlock = readDataPointer(data, offset);
-
-        // Check directory empty
-        let empty = true;
-        this._walkDirectoryEntries(directoryEntriesBlock, false, (b, d, o) => {
-            empty = false;
-            return false;
-        });
-
-        if (!empty) {
-            // TODO: set error
-            return false;
-        }
+        const [dataPointer, metadataPointer] = res;
 
         // Reclaim all directory blocks
-        let victimBlock = directoryEntriesBlock;
+        let victimBlock = dataPointer;
         while (victimBlock) {
             const vbd = this._disk.readBlock(victimBlock);
             this._freelist.free(victimBlock);
-            victimBlock = readUint16BE(vbd[this._disk.blockSize - 32]);
+            victimBlock = readUint16BE(vbd, this._disk.blockSize - 32);
         }
-
-        // Remove directory entry
-        clearDirectoryEntry(data, offset);
-        this._disk.writeBlock(block, data);
 
         return true;
     }
@@ -175,6 +121,8 @@ class FileSystem {
             // TODO: set error
             return false;
         }
+
+        // TODO: valid newType is Uint16
 
         const entry = this._findDirectoryEntryForPath(path);
         if (!entry) {
@@ -195,20 +143,136 @@ class FileSystem {
         return true;
     }
 
-    _prepareNewDirectoryEntry(path, type) {
-        let dirBlock = this._findBlockForDirectory(dirname(path));
-        if (dirBlock === -1) {
+    _removeDirectoryEntry(path, deletingDirectory) {
+        const dir = dirname(path);
+
+        let pb = null, pd, po;
+        let dirBlock;
+
+        if (dir !== '/') {
+
+            // Find the target directory's record in its parent directory
+            const parentEntry = this._findDirectoryEntryForPath(dir);
+            if (parentEntry === false) {
+                // TODO: set error
+                return false;
+            }
+
+            [pb, pd, po] = parentEntry;
+
+            // Check that it's a directory
+            if (!isDirectory(pd, po)) {
+                // TODO: set error
+                return false;
+            }
+
+            // Read its data pointer
+            dirBlock = readDataPointer(pd, po);
+
+        } else {
+            dirBlock = this._findBlockForDirectory(dir);
+            if (dirBlock < 0) {
+                // TODO: set error
+                return false;
+            }
+        }
+
+        const victim = basename(path);
+
+        let fb = null, fd, fo;
+
+        this._walkDirectoryEntries(dirBlock, false, (b, d, o) => {
+            if (readFilename(d, o) === victim) {
+                fb = b;
+                fd = d;
+                fo = o;
+                return false;
+            }
+        });
+
+        if (fb === null) {
             // TODO: set error
             return false;
         }
 
-        let alreadyExists = false, freeBlock = -1, freeOffset;
+        if (deletingDirectory) {
+            if (!isDirectory(fd, fo)) {
+                // TODO: set error
+                return false;
+            }
 
+            let empty = true;
+            this._walkDirectoryEntries(readDataPointer(fd, fo), false, (b, d, o) => {
+                empty = false;
+                return false;
+            });
+
+            if (!empty) {
+                // TODO: set error
+                return false;
+            }
+        } else if (isDirectory(fd, fo)) {
+            // TODO: set error
+            return false;
+        }
+
+        clearDirectoryEntry(fd, fo);
+        this._disk.writeBlock(fb, fd);
+
+        // Decrement parent directory size if not in root directory
+        if (pb !== null) {
+            writeSize(pd, po, readSize(pd, po) - 1);
+            this._disk.writeBlock(pb, pd);
+        }
+    }
+
+    _insertNewDirectoryEntry(path, type, dataPointer) {
+        const dir = dirname(path);
+
+        let pb = null, pd, po;
+        let dirBlock;
+
+        // If we're not in the root directory we need to grab the parent
+        // directory's record for the target dir so we can update the size
+        // (i.e. # of files). We don't store this data for the root directory.
+        if (dir !== '/') {
+
+            // Find the target directory's record in its parent directory
+            const parentEntry = this._findDirectoryEntryForPath(dir);
+            if (parentEntry === false) {
+                // TODO: set error
+                return false;
+            }
+
+            [pb, pd, po] = parentEntry;
+
+            // Check that it's a directory
+            if (!isDirectory(pd, po)) {
+                // TODO: set error
+                return false;
+            }
+
+            // Read its data pointer
+            dirBlock = readDataPointer(pd, po);
+
+        } else {
+            dirBlock = this._findBlockForDirectory(dir);
+            if (dirBlock < 0) {
+                // TODO: set error
+                return false;
+            }
+        }
+
+        // Walk the target directory to:
+        // a) find space
+        // b) check no file with same name
+        let alreadyExists = false, fb = -1, fd, fo;
         const lastBlock = this._walkDirectoryEntries(dirBlock, true, (blockNumber, blockData, entryOffset) => {
             if (blockData[entryOffset] === 0) {
-                if (freeBlock < 0) {
-                    freeBlock = blockNumber;
-                    freeOffset = entryOffset;   
+                if (fb < 0) {
+                    fb = blockNumber;
+                    fd = blockData;
+                    fo = entryOffset;   
                 }
             } else {
                 const filename = readFilename(blockData, entryOffset);
@@ -224,21 +288,31 @@ class FileSystem {
             return false;
         }
 
-        if (freeBlock < 0) {
+        if (fb < 0) {
             console.log("I will allocate a new directory block...");
             // TODO: try to allocate a block from the free list here
             // set up continuation pointer from previous block etc.
             return false;
         }
 
-        const blockData = this._createEmptyFileInDirectory(
-            freeBlock,
-            freeOffset,
-            basename(path),
-            type
-        );
+        // Populate the directory entry & write back
+        // TODO: use the write* functions here
+        writeFixedLengthAsciiString(fd, fo + 0, 16, basename(path));
+        writeUint16BE(fd, fo + 16, type);
+        writeUint16BE(fd, fo + 18, dataPointer);
+        writeUint16BE(fd, fo + 20, 0);
+        writeUint32BE(fd, fo + 22, Math.floor(Date.now() / 1000));
+        writeUint32BE(fd, fo + 26, 0);
+        writeUint16BE(fd, fo + 30, 0);
+        this._disk.writeBlock(fb, fd);
 
-        return [freeBlock, freeOffset, blockData];
+        // Increment parent directory size if not in root directory
+        if (pb !== null) {
+            writeSize(pd, po, readSize(pd, po) + 1);
+            this._disk.writeBlock(pb, pd);
+        }
+
+        return true;
     }
 
     _findBlockForDirectory(path) {
@@ -311,18 +385,6 @@ class FileSystem {
         }
     }
 
-    _createEmptyFileInDirectory(block, offset, name, type) {
-        const data = this._disk.readBlock(block);
-        writeFixedLengthAsciiString(data, offset + 0, 16, name);
-        writeUint16BE(data, offset + 16, type);
-        writeUint16BE(data, offset + 18, 0);
-        writeUint16BE(data, offset + 20, 0);
-        writeUint32BE(data, offset + 22, Math.floor(Date.now() / 1000));
-        writeUint32BE(data, offset + 26, 0);
-        writeUint16BE(data, offset + 30, 0);
-        return data;
-    }
-
     _purgeInode(block) {
         const end = this._disk.blockSize - 2;
         while (block) {
@@ -345,9 +407,11 @@ function readFilename(data, offset) { return readFixedLengthAsciiString(data, of
 function readType(data, offset) { return readUint16BE(data, offset + 16); }
 function readDataPointer(data, offset) { return readUint16BE(data, offset + 18); }
 function readMetadataPointer(data, offset) { return readUint16BE(data, offset + 20); }
+function readSize(data, offset) { return readUint32BE(data, offset + 26); }
 
 function writeType(data, offset, value) { writeUint16BE(data, offset + 16, value); }
 function writeDataPointer(data, offset, value) { writeUint16BE(data, offset + 18, value); }
+function writeSize(data, offset, value) { return writeUint32BE(data, offset + 26, value); }
 
 function clearDirectoryEntry(data, offset) {
     const end = offset + 32;
