@@ -1,11 +1,11 @@
 ## TODO
 
-  - [ ] free list - initial write
-  - [ ] free list - proper implementation
+  - [x] free list - initial write
+  - [x] free list - proper implementation
   - [ ] update directory size on create file
-  - [ ] create directory
-  - [ ] delete file
-  - [ ] delete directory
+  - [x] create directory
+  - [x] delete file
+  - [x] delete directory
   - [ ] change file type
   - [ ] rename/move file
   - [ ] open file
