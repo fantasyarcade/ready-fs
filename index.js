@@ -16,6 +16,13 @@ const FreeList = require('./private/free-list');
 
 const { Types } = require('@fantasyarcade/ready-fs-types');
 
+function assert(condition, message) {
+    if (!condition) {
+        console.error("Assertion failed: %s", message);
+        throw new Error("Assertion failed: " + message);
+    }
+}
+
 exports.create = function(disk) {
     // TODO: set filesystem version on disk (need a method disk to do this)
     const rootDirBlock = FreeList.writeInitial(disk, 1); // create initial freelist
@@ -33,6 +40,9 @@ class FileSystem {
         this._disk = disk;
         this._freelist = new FreeList(disk, 1);
         this._rootDirectoryBlock = this._freelist.blockOffset + this._freelist.blockLength;
+        this._deepThreshold = (this._disk.blockSize / 2) * this._disk.blockSize;
+        this._openFiles = new Map();
+        this._fds = new Map();
     }
 
     list(directory) {
@@ -85,10 +95,14 @@ class FileSystem {
             return false;
         }
 
-        const [dataPointer, metadataPointer] = res;
+        const [dataPointer, metadataPointer, size] = res;
 
-        // TODO: purge inode if file is not open
-        // this._purgeInode(dataPointer);
+        const openFile = this._openFiles.get(dataPointer);
+        if (openFile) {
+            openFile.deleted = true;
+        } else {
+            this._purgeInodeBySize(dataPointer, size);
+        }
 
         return true;
     }
@@ -100,7 +114,7 @@ class FileSystem {
             return false;
         }
 
-        const [dataPointer, metadataPointer] = res;
+        const [dataPointer, metadataPointer, size] = res;
 
         // Reclaim all directory blocks
         let victimBlock = dataPointer;
@@ -138,6 +152,170 @@ class FileSystem {
         this._disk.writeBlock(block, data);
 
         return true;
+    }
+
+    // open file
+    //   indexed by inode
+    //   stores current size, ref count
+    //
+    // fd (symbol)
+    //   maps to open file inode
+    //   current block, block offset, absolute offset
+    //
+    //
+    // open question - how do we track occupancy of blocks/last block/find end of file
+
+    open(path, flags) {
+        // flags: READ, WRITE, CREATE, TRUNCATE, APPEND, SEEK_START, SEEK_END, EXCLUSIVE
+        // check for valid combination of flags
+
+        let ent = this._findDirectoryEntryForPath(path);
+        if (!ent && (flags & Flags.Create)) {
+            // TODO: try to create file 
+        }
+
+        const [eb, ed, eo] = ent;
+
+
+
+        
+
+        // exclusive check
+
+        // find directory entry
+        // if not found, and if CREATE flag specified, create file first
+
+        // create open file entry
+        // seek entry if necessary
+    }
+
+    close(fd) {
+        const f = this._fds.get(fd);
+        if (!f) {
+            // TODO: set error
+            return false;
+        }
+
+        this._fds.delete(fd);
+
+        const o = this._openFiles.get(f.rootBlock);
+        if (--o.refCount === 0) {
+            this._openFiles.delete(f.rootBlock);
+            if (o.deleted) {
+                this._purgeInodeBySize(f.rootBlock, o.size);
+            } else {
+                this._patchBlock(o.directoryEntryBlock, (data) => {
+                    writeSize(data, o.directoryEntryOffset, o.size);
+                });
+            }
+        }
+
+        return true;
+    }
+
+    eof(fd) {
+        const f = this._fds.get(fd);
+        if (!f) {
+            // TODO: set error
+            return false;
+        }
+
+        const o = this._openFiles.get(f.rootBlock);
+
+        return f.absoluteOffset === o.size;
+    }
+
+    read(fd, buffer, offset, len) {
+        const f = this._fds.get(fd);
+        if (!f) {
+            // TODO: set error
+            return false;
+        }
+
+        // TODO: check readable
+        // TODO: check arguments/juggle
+
+        const o = this._openFiles.get(f.rootBlock);
+
+        const bytesToRead = Math.min(o.size - f.absoluteOffset, len);
+        let bytesRead = 0;
+
+        while (bytesRead < bytesToRead) {
+            if (f.dataOffset === this._disk.blockSize) {
+                if (!this._advanceFileInodePointer(f, false)) {
+                    break;
+                }
+            }
+
+            const bytesRemaining = bytesToRead - bytesRead;
+            const bytesAvailableInThisBlock = this._disk.blockSize - f.dataOffset;
+            const bytesToReadFromThisBlock = Math.min(bytesRemaining, bytesAvailableInThisBlock);
+
+            const blockData = this._disk.readBlock(f.dataBlock);
+            for (let i = 0; i < bytesToReadFromThisBlock; ++i) {
+                buffer[offset++] = blockData[i];
+            }
+
+            bytesRead += bytesToReadFromThisBlock;
+            f.dataOffset += bytesToReadFromThisBlock;
+            f.absoluteOffset += bytesToReadFromThisBlock;
+        }
+
+        return bytesRead;
+    }
+
+    write(fd, buffer, offset, len) {
+        const f = this._fs.get(fd);
+        if (!f) {
+            // TODO: set error
+            return false;
+        }
+
+        // TODO: clear error
+        // TODO: check writable
+        // TODO: check arguments/juggle
+
+        const o = this._openFiles.get(f.rootBlock);
+
+        const bytesToWrite = len;
+        let bytesWritten = 0;
+
+        while (bytesWritten < bytesToWrite) {
+            if (f.dataOffset === this._disk.blockSize) {
+                if (!this._advanceFileInodePointer(f, true)) {
+                    // TODO: set error
+                    break;
+                }
+            }
+
+            const bytesRemaining = bytesToWrite - bytesWritten;
+            const bytesAvailableInThisBlock = this._disk.blockSize - f.dataOffset;
+            const bytesToWriteToThisBlock = Math.min(bytesRemaining, bytesAvailableInThisBlock);
+
+            const blockData = this._disk.readBlock(f.dataBlock);
+            for (let i = 0; i < bytesToWriteToThisBlock; ++i) {
+                // blah
+            }
+            this._disk.writeBlock(f.dataBlock, blockData);
+
+            bytesWritten += bytesToWriteToThisBlock;
+            f.dataOffset += bytesToWriteToThisBlock;
+            f.absoluteOffset += bytesToWriteToThisBlock;
+        }
+
+        if (f.absoluteOffset > o.size) {
+            o.size = f.absoluteOffset;
+            // TODO: write back to directory entry?
+        }
+
+        return bytesWritten;
+    }
+
+    seek(fd, offset, whence) {
+        // whence is REL_START, REL_CURRENT, REL_END
+
+        // validate FD
+        // try to move pointer to the location
     }
 
     _removeDirectoryEntry(path, deletingDirectory) {
@@ -221,6 +399,12 @@ class FileSystem {
             writeSize(pd, po, readSize(pd, po) - 1);
             this._disk.writeBlock(pb, pd);
         }
+
+        return [
+            readDataPointer(fd, fo),
+            readMetadataPointer(fd, fo),
+            readSize(fd, do)
+        ];
     }
 
     _insertNewDirectoryEntry(path, type, dataPointer) {
@@ -382,19 +566,84 @@ class FileSystem {
         }
     }
 
-    _purgeInode(block) {
-        const end = this._disk.blockSize - 2;
-        while (block) {
-            const blockData = this._disk.readBlock(block);
-            let i;
-            for (i = 0; i < end; i += 2) {
-                const b = readUint16BE(blockData, i);
+    _purgeInodeBySize(block, size) {
+        this._purgeInode(block, size > this._deepThreshold ? 2 : 1);
+    }
+
+    _purgeInode(block, depth) {
+        if (depth > 0) {
+            const data = this._disk.readBlock(block);
+            for (let i = 0; i < this._disk.blockSize; i += 2) {
+                const b = readUint16BE(data, i);
                 if (b !== 0) {
-                    this._freelist.free(b);
+                    this._purgeInode(b, depth - 1);
                 }
             }
-            block = readUint16BE(blockData, i);
         }
+        this._freelist.free(block);
+    }
+
+    _patchBlock(block, cb) {
+        const data = this._disk.readBlock(block);
+        cb(data);
+        this._disk.writeBlock(block, data);
+    }
+
+    _advanceFileInodePointer(f, allocateNew) {
+        assert(
+            f.dataOffset === this._disk.blockSize,
+            "_advanceFileInodePointer() must only be called when current block offset === disk block size"
+        );
+
+        // Rescue data so we can restore previous state if allocations fail
+        const allocatedBlocks = [];
+        const previousInodeStack = f.inodeStack.map(ent => {
+            return { block: ent.block, offset: ent.offset };
+        });
+        
+        const _advance = (p) => {
+            assert(p >= 0, "cannot ascend beyond inode at depth 0; are you missing an EOF check?");
+            const ent = f.inodeStack[p];
+            let nextOffset = ent.offset + 2;
+            if (nextOffset === this._disk.blockSize) {
+                const nextBlock = _advance(p - 1);
+                if (nextBlock < 0) {
+                    return -1;
+                }
+                ent.block = nextBlock;
+                ent.offset = nextOffset = 0;
+            }
+            const bd = this._disk.readBlock(ent.block);
+            let targetBlock = readUint16BE(bd, nextOffset);
+            if (targetBlock === 0) {
+                if (!allocateNew) {
+                    return -1;
+                }
+                targetBlock = this._freelist.alloc();
+                if (targetBlock < 0) {
+                    return -1;
+                }
+                writeUint16BE(bd, ent.offset, targetBlock);
+                this._disk.writeBlock(ent.block, bd);
+            }
+            ent.offset = nextOffset;
+            return targetBlock;
+        };
+
+        const nextBlock = _advance(f.inodeStack.length - 1);
+        
+        if (nextBlock < 0) {
+            f.inodeStack = previousInodeStack;
+            allocatedBlocks.forEach(b => {
+                this._freelist.free(b);
+            });
+            return false;
+        }
+
+        f.dataBlock = nextBlock;
+        f.dataOffset = 0;
+
+        return true;
     }
 }
 
@@ -426,5 +675,23 @@ function parseDirectoryEntry(data, offset) {
         modified    : readUint32BE(data, offset + 22),
         size        : readUint32BE(data, offset + 26),
         flags       : readUint16BE(data, offset + 30)
+    };
+}
+
+function createOpenFile(rootBlock, size) {
+    return {
+        rootBlock: rootBlock,
+        size: size,
+        deleted: false
+    };
+}
+
+function createFileDescriptor(rootBlock) {
+    return {
+        rootBlock: rootBlock,
+        inodeStack: [],
+        dataBlock: null,
+        dataOffset: null,
+        absoluteOffset: null
     };
 }
