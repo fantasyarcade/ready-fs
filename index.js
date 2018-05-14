@@ -611,47 +611,58 @@ class FileSystem {
             return target;
         }
 
+        const indirectIncrement = () => {
+            const nro = f.root.offset + 2;
+            if (nro === this._disk.blockSize) {
+                return false;
+            }
+            const rd = this._disk.readBlock(f.root.block);
+            const mb = readUint16BE(rd, nro);
+            let target;
+            if (mb === 0) {
+                if (!allocateNew) {
+                    return -1;
+                }
+                const b1 = this._freelist.alloc();
+                const b2 = this._freelist.alloc();
+                if (b1 < 0 || b2 < 0) {
+                    this._freelist.free(b1);
+                    this._freelist.free(b2);
+                    return -1;
+                }
+                this._disk.zeroBlock(b1);
+                this._disk.zeroBlock(b2);
+                writeUint16BE(rd, nro, b1);
+                this._disk.writeBlock(f.root.block, rd);
+                const md = this._disk.readBlock(b1);
+                writeUint16BE(md, 0, b2);
+                this._disk.writeBlock(b1, md);
+                f.middle.block = b1;
+                target = b2;
+            } else {
+                f.middle.block = mb;
+                target = readUint16BE(this._disk.readBlock(f.middle.block, 0));
+            }
+            f.middle.offset = 0;
+            f.root.offset = nro;
+            return target;
+        }
+
         let targetBlock;
         if (f.depth === 0) {
             if ((f.root.offset + 2) < directThreshold) {
                 targetBlock = simpleIncrement(f.root);
             } else {
-                const rd = this._disk.readBlock(f.root.block);
-                const mb = readUint16BE(rd, directThreshold);
-                if (mb === 0) {
-                    if (!allocateNew) {
-                        return false;
-                    }
-                    const b1 = this._freelist.alloc();
-                    const b2 = this._freelist.alloc();
-                    if (b1 < 0 || b2 < 0) {
-                        this._freelist.free(b1);
-                        this._freelist.free(b2);
-                        return false;
-                    }
-                    this._disk.zeroBlock(b1);
-                    this._disk.zeroBlock(b2);
-                    writeUint16BE(rd, directThreshold, b1);
-                    this._disk.writeBlock(f.root.block, rd);
-                    const md = this._disk.readBlock(b1);
-                    writeUint16BE(md, 0, b2);
-                    this._disk.writeBlock(b1, md);
-                    targetBlock = b2;
-                } else {
-                    // If there's a block pointer set up we know the whole tree has been
-                    // allocated successfully, so just chase the pointers...
-                    f.middle.block = mb;
-                    f.middle.offset = 0;
-                    targetBlock = readUint16BE(this._disk.readBlock(f.middle.block), 0);
+                targetBlock = indirectIncrement();
+                if (targetBlock >= 0) {
+                    f.depth = 1;
                 }
-                f.root.offset = directThreshold;
-                f.depth = 1;
             }
         } else {
             if ((f.middle.offset + 2) < this._disk.blockSize) {
                 targetBlock = simpleIncrement(f.middle);
             } else {
-                // this is the troublesome case!
+                targetBlock = indirectIncrement();
             }
         }
 
