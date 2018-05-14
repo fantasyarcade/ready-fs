@@ -11,6 +11,20 @@ File system has:
 
 # Inode format
 
+Each inode is a list of pointers to disk blocks. A pointer is 16 bits, so a disk has a maximum of 65536 blocks. The scheme is similar to Linux: pointers in the first half of a file's root inode are direct data pointers, whereas those in the second half have a single level of indirection.
+
+Given a 512 byte block size:
+
+```
+Number of pointers per inode        : 256 (512 bytes / 2 bytes)
+Number of direct pointers (root)    : 128
+Directly addressable data           : 65536 bytes (128 * 512 bytes)
+Number of indirect pointers (root)  : 128
+Indirectly addressable data         : 16777216 bytes (128 * 256 * 512 bytes)
+Maximum file size                   : 16MiB + 64KiB
+```
+
+
 Each 16 bit pointer is a pointer to a data block; zero is a sentinel value. If the final pointer in an inode is non-zero it's interpreted as a chain inode.
 
 # Directory Format
