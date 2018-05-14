@@ -89,35 +89,33 @@ class FileSystem {
     }
 
     delete(path) {
-        const res = this._removeDirectoryEntry(path, false);
-        if (!res) {
+        const ent = this._removeDirectoryEntry(path, false);
+        if (!ent) {
             // TODO: set error
             return false;
         }
 
-        const [dataPointer, metadataPointer, size] = res;
+        const dataPointer = readDataPointer(ent, 0);
 
         const openFile = this._openFiles.get(dataPointer);
         if (openFile) {
             openFile.deleted = true;
         } else {
-            this._purgeInodeBySize(dataPointer, size);
+            this._purgeInode(dataPointer, readInodeDepth(ent));
         }
 
         return true;
     }
 
     rmdir(path) {
-        const res = this._removeDirectoryEntry(path, true);
-        if (!res) {
+        const ent = this._removeDirectoryEntry(path, true);
+        if (!ent) {
             // TODO: set error
             return false;
         }
 
-        const [dataPointer, metadataPointer, size] = res;
-
         // Reclaim all directory blocks
-        let victimBlock = dataPointer;
+        let victimBlock = readDataPointer(ent, 0);
         while (victimBlock) {
             const vbd = this._disk.readBlock(victimBlock);
             this._freelist.free(victimBlock);
@@ -128,12 +126,16 @@ class FileSystem {
     }
 
     setType(path, newType) {
-        if (newType === Types.Directory) {
+        newType = Number(newType);
+        if (!Number.isInteger(newType) || newType < 0 || newType > 0xFFFF) {
             // TODO: set error
             return false;
         }
 
-        // TODO: valid newType is Uint16
+        if (newType === Types.Directory) {
+            // TODO: set error
+            return false;
+        }
 
         const entry = this._findDirectoryEntryForPath(path);
         if (!entry) {
@@ -400,11 +402,7 @@ class FileSystem {
             this._disk.writeBlock(pb, pd);
         }
 
-        return [
-            readDataPointer(fd, fo),
-            readMetadataPointer(fd, fo),
-            readSize(fd, do)
-        ];
+        return fd.slice(fo, 32);
     }
 
     _insertNewDirectoryEntry(path, type, dataPointer) {
@@ -566,10 +564,6 @@ class FileSystem {
         }
     }
 
-    _purgeInodeBySize(block, size) {
-        this._purgeInode(block, size > this._deepThreshold ? 2 : 1);
-    }
-
     _purgeInode(block, depth) {
         if (depth > 0) {
             const data = this._disk.readBlock(block);
@@ -589,59 +583,84 @@ class FileSystem {
         this._disk.writeBlock(block, data);
     }
 
-    _advanceFileInodePointer(f, allocateNew) {
+    _advanceFileInodePointer(o, f, allocateNew) {
         assert(
             f.dataOffset === this._disk.blockSize,
             "_advanceFileInodePointer() must only be called when current block offset === disk block size"
         );
 
-        // Rescue data so we can restore previous state if allocations fail
-        const allocatedBlocks = [];
-        const previousInodeStack = f.inodeStack.map(ent => {
-            return { block: ent.block, offset: ent.offset };
-        });
-        
-        const _advance = (p) => {
-            assert(p >= 0, "cannot ascend beyond inode at depth 0; are you missing an EOF check?");
-            const ent = f.inodeStack[p];
-            let nextOffset = ent.offset + 2;
-            if (nextOffset === this._disk.blockSize) {
-                const nextBlock = _advance(p - 1);
-                if (nextBlock < 0) {
-                    return -1;
-                }
-                ent.block = nextBlock;
-                ent.offset = nextOffset = 0;
-            }
-            const bd = this._disk.readBlock(ent.block);
-            let targetBlock = readUint16BE(bd, nextOffset);
-            if (targetBlock === 0) {
+        const directThreshold = this._disk.blockSize / 2;
+
+        const simpleIncrement = (ent) => {
+            const data = this._disk.readBlock(ent.block);
+            const nextOffset = ent.offset + 2;
+            let target = readUint16BE(data, nextOffset);
+            if (target === 0) {
                 if (!allocateNew) {
                     return -1;
                 }
-                targetBlock = this._freelist.alloc();
-                if (targetBlock < 0) {
+                target = this._freelist.alloc();
+                if (target < 0) {
                     return -1;
                 }
-                writeUint16BE(bd, ent.offset, targetBlock);
-                this._disk.writeBlock(ent.block, bd);
+                this._disk.zeroBlock(target);
+                writeUint16BE(data, nextOffset, target);
+                this._disk.writeBlock(ent.block, data);
             }
             ent.offset = nextOffset;
-            return targetBlock;
-        };
+            return target;
+        }
 
-        const nextBlock = _advance(f.inodeStack.length - 1);
-        
-        if (nextBlock < 0) {
-            f.inodeStack = previousInodeStack;
-            allocatedBlocks.forEach(b => {
-                this._freelist.free(b);
-            });
+        let targetBlock;
+        if (f.depth === 0) {
+            if ((f.root.offset + 2) < directThreshold) {
+                targetBlock = simpleIncrement(f.root);
+            } else {
+                const rd = this._disk.readBlock(f.root.block);
+                const mb = readUint16BE(rd, directThreshold);
+                if (mb === 0) {
+                    if (!allocateNew) {
+                        return false;
+                    }
+                    const b1 = this._freelist.alloc();
+                    const b2 = this._freelist.alloc();
+                    if (b1 < 0 || b2 < 0) {
+                        this._freelist.free(b1);
+                        this._freelist.free(b2);
+                        return false;
+                    }
+                    this._disk.zeroBlock(b1);
+                    this._disk.zeroBlock(b2);
+                    writeUint16BE(rd, directThreshold, b1);
+                    this._disk.writeBlock(f.root.block, rd);
+                    const md = this._disk.readBlock(b1);
+                    writeUint16BE(md, 0, b2);
+                    this._disk.writeBlock(b1, md);
+                    targetBlock = b2;
+                } else {
+                    // If there's a block pointer set up we know the whole tree has been
+                    // allocated successfully, so just chase the pointers...
+                    f.middle.block = mb;
+                    f.middle.offset = 0;
+                    targetBlock = readUint16BE(this._disk.readBlock(f.middle.block), 0);
+                }
+                f.root.offset = directThreshold;
+                f.depth = 1;
+            }
+        } else {
+            if ((f.middle.offset + 2) < this._disk.blockSize) {
+                targetBlock = simpleIncrement(f.middle);
+            } else {
+                // this is the troublesome case!
+            }
+        }
+
+        if (targetBlock < 0) {
             return false;
         }
 
-        f.dataBlock = nextBlock;
-        f.dataOffset = 0;
+        f.data.block = targetBlock;
+        f.data.offset = 0;
 
         return true;
     }
@@ -657,7 +676,7 @@ function readSize(data, offset) { return readUint32BE(data, offset + 26); }
 
 function writeType(data, offset, value) { writeUint16BE(data, offset + 16, value); }
 function writeDataPointer(data, offset, value) { writeUint16BE(data, offset + 18, value); }
-function writeSize(data, offset, value) { return writeUint32BE(data, offset + 26, value); }
+function writeSize(data, offset, value) { writeUint32BE(data, offset + 26, value); }
 
 function clearDirectoryEntry(data, offset) {
     const end = offset + 32;
@@ -688,10 +707,10 @@ function createOpenFile(rootBlock, size) {
 
 function createFileDescriptor(rootBlock) {
     return {
-        rootBlock: rootBlock,
-        inodeStack: [],
-        dataBlock: null,
-        dataOffset: null,
-        absoluteOffset: null
+        root: { block: rootBlock, offset: 0 },
+        middle: { block: null, offset: null },
+        data: { block: null, offset: null },
+        absoluteOffset: null,
+        depth: 0
     };
 }

@@ -60,6 +60,9 @@ module.exports = class FreeList {
     }
 
     free(block) {
+        if (block < 0) {
+            return;
+        }
         this._list.push(block);
         this._markBlock(block, true);
     }
