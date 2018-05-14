@@ -24,9 +24,6 @@ Indirectly addressable data         : 16777216 bytes (128 * 256 * 512 bytes)
 Maximum file size                   : 16MiB + 64KiB
 ```
 
-
-Each 16 bit pointer is a pointer to a data block; zero is a sentinel value. If the final pointer in an inode is non-zero it's interpreted as a chain inode.
-
 # Directory Format
 
 Each directory entry is 32 bytes. Filenames do not have extensions, instead there's a dedicated type field to specify a file's type.
